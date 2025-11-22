@@ -1,0 +1,14 @@
+[Unit]
+Description=WebApp Service
+After=network-online.target
+
+[Service]
+User=csye6225
+Group=csye6225
+EnvironmentFile=/etc/webapp/env
+WorkingDirectory=/opt/webapp
+ExecStart=/usr/bin/java -jar /opt/webapp/app.jar
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

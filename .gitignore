@@ -1,0 +1,46 @@
+# Maven
+target/
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+*.war
+*.ear
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*.swn
+.project
+.classpath
+.settings/
+
+# Environment
+.env
+.env.local
+.env*
+
+# Logs
+*.log
+logs/
+.gz
+webapp-local.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+*.class.env.production
+.env.production
+webapp.zip
+
+.env.production
+webapp.zip
+application-local.properties

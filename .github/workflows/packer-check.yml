@@ -1,0 +1,54 @@
+name: Packer Format and Validate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+concurrency:
+  group: packer-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-packer:
+    runs-on: ubuntu-latest
+    name: Validate Packer Template
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@v3
+        with:
+          version: "1.11.2"
+
+      # ---------- packer fmt ----------
+      - name: Check formatting
+        working-directory: packer
+        run: |
+          echo "Running packer fmt -check -recursive..."
+          packer fmt -check -recursive .
+
+      # 準備假的 JAR 文件（在根目錄）
+      - name: Prepare dummy artifact
+        run: |
+          mkdir -p target
+          touch target/webapp.jar
+          echo "Created dummy JAR at target/webapp.jar"
+          ls -la target/webapp.jar
+
+      # Packer init（從根目錄）
+      - name: Initialize Packer
+        run: |
+          echo "Initializing Packer..."
+          packer init packer/template.pkr.hcl
+
+      # Packer validate（從根目錄執行）
+      - name: Validate template
+        run: |
+          echo "Running packer validate..."
+          packer validate \
+            -var "app_artifact=target/webapp.jar" \
+            -var "region=us-east-1" \
+            packer/template.pkr.hcl

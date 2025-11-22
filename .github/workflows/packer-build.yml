@@ -1,0 +1,256 @@
+name: Build and Deploy AMI
+on:
+  pull_request:
+    types: [closed] # PR 建立、更新、重新開啟時觸發
+    branches: [main]
+
+jobs:
+  build-ami:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      # ===================================
+      # Part 1: Build Application Artifact
+      # ===================================
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Build application
+        run: mvn -q -DskipTests clean compile
+
+      - name: Build application artifact
+        run: mvn -q -DskipTests package
+
+      - name: Get JAR absolute path
+        id: jar
+        shell: bash
+        run: |
+          set -euo pipefail
+          JAR=$(ls -1 target/*.jar | head -n1)
+          JAR=$(realpath "$JAR")
+          echo "path=$JAR" >> "$GITHUB_OUTPUT"
+          echo "Found JAR: $JAR"
+
+      # ==================================
+      # Part 2: Build AMI in DEV Account
+      # ==================================
+
+      # 現有步驟: 配置 DEV 帳戶並構建 AMI
+      - name: Configure AWS credentials for DEV
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Verify DEV account
+        run: |
+          echo "Verifying DEV account..."
+          ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+          echo "Current account: $ACCOUNT_ID"
+          if [ "$ACCOUNT_ID" != "887721947107" ]; then
+            echo "❌ Wrong account! Expected DEV (887721947107)"
+            exit 1
+          fi
+          echo "✅ Confirmed DEV account"
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@v3
+        with:
+          version: "1.11.2"
+
+      - name: Packer init
+        run: packer init packer/template.pkr.hcl
+
+      - name: Packer build AMI in DEV
+        id: build_ami
+        run: |
+          AMI_ID=$(packer build \
+            -var "region=${{ vars.AWS_REGION }}" \
+            -var "ami_name_prefix=${{ secrets.AMI_NAME_PREFIX }}" \
+            -var "demo_account_id=311695012350" \
+            -var "app_port=8080" \
+            -var "app_artifact=${{ steps.jar.outputs.path }}" \
+            -var "db_name=${{ secrets.DB_NAME }}" \
+            -var "db_user=${{ secrets.DB_USER }}" \
+            -var "db_password=${{ secrets.DB_PASSWORD }}" \
+            packer/template.pkr.hcl \
+            | grep -oP 'ami-\w+' | tail -1)
+
+          echo "ami_id=$AMI_ID" >> "$GITHUB_OUTPUT"
+          echo "Built AMI in DEV: $AMI_ID"
+
+      # ============================================
+      # Part 3: Switch to DEMO Account and Deploy
+      # ============================================
+
+      # 清理 AWS 認證並切換到 DEMO 帳戶
+      - name: Clear previous AWS credentials
+        run: |
+          unset AWS_ACCESS_KEY_ID
+          unset AWS_SECRET_ACCESS_KEY
+          unset AWS_SESSION_TOKEN
+          echo "Cleared previous AWS credentials"
+
+      - name: Configure AWS credentials for DEMO
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.DEMO_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.DEMO_AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+
+      - name: Verify DEMO account
+        run: |
+          echo "Verifying DEMO account..."
+          ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+          if [ "$ACCOUNT_ID" = "311695012350" ]; then
+            echo "✅ Successfully switched to DEMO account: $ACCOUNT_ID"
+          else
+            echo "❌ Still in wrong account: $ACCOUNT_ID (expected: 311695012350)"
+            exit 1
+          fi
+          aws sts get-caller-identity
+
+      # 更新 Launch Template
+      - name: Update Launch Template with new AMI
+        id: update_template
+        run: |
+          # 找到 Launch Template ID (使用 Auto Scaling Group)
+          ASG_NAME="csye6225_asg"
+
+          # 獲取 Launch Template ID
+          LAUNCH_TEMPLATE_ID=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names $ASG_NAME \
+            --query 'AutoScalingGroups[0].LaunchTemplate.LaunchTemplateId' \
+            --output text)
+
+          if [ -z "$LAUNCH_TEMPLATE_ID" ] || [ "$LAUNCH_TEMPLATE_ID" = "None" ]; then
+            echo "Launch Template not found in ASG!"
+            exit 1
+          fi
+
+          echo "Found Launch Template: $LAUNCH_TEMPLATE_ID"
+
+          # 創建新版本
+          NEW_VERSION=$(aws ec2 create-launch-template-version \
+            --launch-template-id $LAUNCH_TEMPLATE_ID \
+            --source-version '$Latest' \
+            --launch-template-data '{"ImageId":"${{ steps.build_ami.outputs.ami_id }}"}' \
+            --query 'LaunchTemplateVersion.VersionNumber' \
+            --output text)
+
+          echo "template_id=$LAUNCH_TEMPLATE_ID" >> "$GITHUB_OUTPUT"
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Created Launch Template version $NEW_VERSION with AMI: ${{ steps.build_ami.outputs.ami_id }}"
+
+      # ===========================
+      # Part 4: Instance Refresh
+      # ===========================
+
+      # 觸發 Instance Refresh
+      - name: Start Auto Scaling Group instance refresh
+        id: instance_refresh
+        run: |
+          # 直接使用已知的 ASG 名稱
+          ASG_NAME="csye6225_asg"
+
+          # 驗證 ASG 存在
+          aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names $ASG_NAME \
+            --query 'AutoScalingGroups[0].AutoScalingGroupName' \
+            --output text > /dev/null
+
+          if [ $? -ne 0 ]; then
+            echo "Auto Scaling Group $ASG_NAME not found!"
+            exit 1
+          fi
+
+          echo "Found Auto Scaling Group: $ASG_NAME"
+
+          # 更新 ASG 使用最新的 Launch Template 版本
+          aws autoscaling update-auto-scaling-group \
+            --auto-scaling-group-name $ASG_NAME \
+            --launch-template LaunchTemplateId=${{ steps.update_template.outputs.template_id }},Version='$Latest'
+
+          # 啟動 Instance Refresh 
+          echo "Starting instance refresh..."
+          INSTANCE_REFRESH_ID=$(aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name $ASG_NAME \
+            --preferences '{
+              "MinHealthyPercentage": 50,
+              "InstanceWarmup": 180,
+              "SkipMatching": false,
+              "AutoRollback": false
+            }' \
+            --query 'InstanceRefreshId' \
+            --output text)
+
+          echo "asg_name=$ASG_NAME" >> "$GITHUB_OUTPUT"
+          echo "refresh_id=$INSTANCE_REFRESH_ID" >> "$GITHUB_OUTPUT"
+          echo "Started instance refresh: $INSTANCE_REFRESH_ID for ASG: $ASG_NAME"
+
+      # 等待 Instance Refresh 完成
+      - name: Wait for instance refresh completion
+        run: |
+          ASG_NAME="${{ steps.instance_refresh.outputs.asg_name }}"
+          REFRESH_ID="${{ steps.instance_refresh.outputs.refresh_id }}"
+
+          echo "Monitoring instance refresh: $REFRESH_ID"
+
+          MAX_WAIT_TIME=1800
+          ELAPSED_TIME=0
+          CHECK_INTERVAL=30
+
+          while [ $ELAPSED_TIME -lt $MAX_WAIT_TIME ]; do
+            STATUS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name $ASG_NAME \
+              --instance-refresh-ids $REFRESH_ID \
+              --query 'InstanceRefreshes[0].Status' \
+              --output text)
+            
+            PERCENTAGE=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name $ASG_NAME \
+              --instance-refresh-ids $REFRESH_ID \
+              --query 'InstanceRefreshes[0].PercentageComplete' \
+              --output text)
+            
+            TO_UPDATE=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name $ASG_NAME \
+              --instance-refresh-ids $REFRESH_ID \
+              --query 'InstanceRefreshes[0].InstancesToUpdate' \
+              --output text)
+            
+            echo "[$((ELAPSED_TIME/60))m] Status: $STATUS | Progress: ${PERCENTAGE}% | To Update: $TO_UPDATE"
+            
+            # 成功條件
+            if [ "$STATUS" = "Successful" ]; then
+              echo "✅ Instance refresh completed!"
+              exit 0
+            fi
+            
+            # ✅ 加這個：100% 且沒有待更新就算成功
+            if [ "$PERCENTAGE" = "100" ] && [ "$TO_UPDATE" = "0" ]; then
+              echo "✅ Instance refresh complete (100%, 0 to update)"
+              exit 0
+            fi
+            
+            # 失敗
+            if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ]; then
+              echo "❌ Failed: $STATUS"
+              exit 1
+            fi
+            
+            sleep $CHECK_INTERVAL
+            ELAPSED_TIME=$((ELAPSED_TIME + CHECK_INTERVAL))
+          done
+
+          echo "❌ Timeout after 30 minutes"
+          exit 1
