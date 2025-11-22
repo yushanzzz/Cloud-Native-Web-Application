@@ -202,11 +202,3 @@ aws elbv2 describe-target-health --target-group-arn <arn>
 # Lambda logs
 aws logs tail /aws/lambda/email-verification --follow
 ```
-
----
-
-## Author
-
-**Iris Zou**  
-Northeastern University - CSYE 6225 Cloud Computing  
-Email: zou.yush@northeastern.edu
