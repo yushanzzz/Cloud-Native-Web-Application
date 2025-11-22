@@ -1,102 +1,212 @@
-# Assignment 9 - Cloud-Native Web Application
+# Cloud-Native Web Application
 
-## Description
+A production-ready RESTful web application built with Spring Boot and deployed on AWS with complete infrastructure automation and serverless email verification.
 
-Cloud-native web application with serverless email verification system, enhanced security, and dual-account CI/CD deployment.
+---
 
-## Prerequisites for Building and Deploying Your Application Locally
+## Architecture Overview
 
-### Required Software
+This application implements a highly available, auto-scaling architecture on AWS:
 
-- **Java 21** or higher
-- **Apache Maven 3.6+**
-- **MySQL 8.0+** (for local development)
+- **Multi-tier Architecture**: Load-balanced EC2 instances in Auto Scaling Groups across multiple AZs
+- **Serverless Email Verification**: SNS → Lambda → SES workflow with DynamoDB deduplication
+- **Infrastructure as Code**: Complete automation using Terraform and Packer
+- **Zero-downtime Deployments**: Automated CI/CD with GitHub Actions and instance refresh
 
-### Environment Setup
+## Key Features
 
-```bash
-# Verify versions
-java -version
-mvn -version
+- **RESTful API**: User and product management with Spring Boot
+- **Secure Authentication**: BCrypt password hashing with Basic Authentication
+- **Image Management**: S3-backed storage with IAM role-based access
+- **Email Verification**: Serverless workflow with time-limited tokens
+- **Auto Scaling**: Dynamic scaling (3-5 instances) based on CPU metrics
+- **High Availability**: Multi-AZ deployment with Application Load Balancer
+- **Observability**: CloudWatch Logs and custom StatsD metrics
+- **Security**: KMS encryption, Secrets Manager, SSL/TLS, private subnets
+
+---
+
+## Technology Stack
+
+**Backend**: Java 21, Spring Boot 3.x, Spring Security, Spring Data JPA, MySQL 8.0
+
+**AWS Services**: EC2, Auto Scaling Groups, Application Load Balancer, RDS MySQL, S3, SNS, Lambda, SES, DynamoDB, CloudWatch, KMS, Secrets Manager, Route 53, VPC
+
+**DevOps**: Terraform, Packer, GitHub Actions, Maven, StatsD
+
+---
+
+## 📋 API Endpoints
+
+### User Management
+
+```
+GET    /healthz                    - Health check endpoint
+POST   /v1/user                    - Create new user account
+GET    /v1/user/self               - Get authenticated user details
+PUT    /v1/user/self               - Update user information
+GET    /validateEmail              - Verify email with token
 ```
 
-## Build and Deploy Instructions
+### Product Management
 
-### Local Development
+```
+POST   /v1/product                 - Create new product
+GET    /v1/product/{id}            - Get product details
+PUT    /v1/product/{id}            - Update product (owner only)
+PATCH  /v1/product/{id}            - Partial update product
+DELETE /v1/product/{id}            - Delete product (owner only)
+```
+
+### Image Management
+
+```
+POST   /v1/product/{id}/image      - Upload product image
+GET    /v1/product/{id}/image      - List all product images
+GET    /v1/product/{id}/image/{imageId}  - Get specific image
+DELETE /v1/product/{id}/image/{imageId}  - Delete image (owner only)
+```
+
+---
+
+## Security Features
+
+- **Password Security**: BCrypt hashing with unique salts per user
+- **Authentication**: HTTP Basic Authentication for protected endpoints
+- **Encryption at Rest**: KMS encryption for EC2, RDS, S3
+- **Encryption in Transit**: SSL/TLS via Application Load Balancer
+- **Network Isolation**: Private subnets for databases
+- **Secret Management**: AWS Secrets Manager for credentials
+- **IAM Roles**: Principle of least privilege
+- **Token Expiration**: 5-minute validity for email verification
+
+---
+
+## CI/CD Pipeline
+
+### Automated Workflows
+
+**Pull Request Workflow** - Status checks on PR raised
+
+- Run integration tests
+- Packer template format and validation
+- Block merge if checks fail
+
+**Deployment Workflow** - Triggered on merge to main
+
+```
+Run Tests → Build JAR → Build AMI (Packer) → Share to DEMO Account
+→ Update Launch Template → Trigger Instance Refresh → Wait for Completion
+```
+
+**Custom AMI includes:**
+
+- Ubuntu 24.04 LTS
+- Java 21, CloudWatch Agent
+- Application JAR and systemd service
+- Auto-start on boot
+
+---
+
+## Monitoring
+
+**CloudWatch Integration**:
+
+- Application logs streamed to CloudWatch Logs
+- Custom StatsD metrics for API performance
+- Auto Scaling based on CPU utilization
+- ALB health checks every 30 seconds
+
+**Custom Metrics**:
+
+- API call count and duration per endpoint
+- Database query execution time
+- S3 operation latency
+
+---
+
+## Local Development
+
+### Prerequisites
+
+- Java 21, Maven 3.8+, MySQL 8.0
+- AWS CLI configured
+
+### Setup
 
 ```bash
-# Clone repository
-git clone https://github.com/yushanzzz/webapp-fork.git
-cd webapp-fork
+# Create database
+mysql -u root -p
+CREATE DATABASE webappdb;
 
-# Build and test
-mvn clean compile
-mvn test
+# Create .env file
+cat > .env <<EOF
+DB_HOST=localhost
+DB_PORT=3306
+DB_NAME=webappdb
+DB_USER=root
+DB_PASSWORD=your_password
+AWS_REGION=us-east-1
+AWS_S3_BUCKET=your-dev-bucket
+SNS_TOPIC_ARN=arn:aws:sns:us-east-1:123456789012:topic
+EOF
 
-# Run application
+# Build and run
+mvn clean install
 mvn spring-boot:run
 ```
 
-### Environment Configuration
+## Infrastructure Deployment
 
-Create `.env` file:
-
-```properties
-DATABASE_URL=jdbc:mysql://localhost:3306/csye6225
-DATABASE_USERNAME=csye6225
-DATABASE_PASSWORD=your_password
-APP_PORT=8080
-```
-
-### Automated Deployment
-
-The application uses automated CI/CD deployment through GitHub Actions and Terraform. Push to main branch triggers automated AMI building and deployment.
-
-### Email Verification System
-
-- User registration triggers SNS message
-- Lambda function sends verification email
-- Users must verify email within 1 minute
-- Endpoint: `GET /validateEmail?email=user@example.com&token=uuid`
-
-### Security Enhancements
-
-- KMS encryption for all AWS resources
-- SSL certificates for HTTPS
-- Secrets Manager for sensitive data
-- 90-day automatic key rotation
-
-### Advanced CI/CD
-
-- Dual-account deployment (DEV/DEMO)
-- Zero-downtime rolling updates
-- Automated AMI sharing between accounts
-- Instance refresh with health checks
-
-## Testing
-
-### Local Testing
+### Terraform Setup
 
 ```bash
-# Run all tests
-mvn test
+# Clone infrastructure repository
+git clone https://github.com/your-org/tf-aws-infra-fork.git
+cd tf-aws-infra-fork
 
-# Start application
-mvn spring-boot:run
-
-# Test health check
-curl http://localhost:8080/healthz
+# Initialize and apply
+terraform init
+terraform plan
+terraform apply
 ```
 
-## Architecture
+### Import SSL Certificate (DEMO Account)
 
-The application runs on AWS with:
+```bash
+aws acm import-certificate \
+  --certificate fileb://certificate.crt \
+  --private-key fileb://private.key \
+  --certificate-chain fileb://certificate-chain.crt \
+  --region us-east-1 \
+  --profile demo
+```
 
-- **Load Balancer**: Distributes traffic across multiple instances
-- **Auto Scaling**: 3-5 EC2 instances based on demand
-- **RDS**: MySQL database with encryption
-- **S3**: File storage with lifecycle policies
-- **SNS + Lambda**: Email verification system
-- **CloudWatch**: Monitoring and logging
+## Troubleshooting
 
-All infrastructure is managed through Terraform and deployed via GitHub Actions.
+```bash
+# Check CloudWatch Logs
+aws logs tail /aws/ec2/webapp --follow --profile demo
+
+# Check application status on EC2
+ssh ubuntu@<instance-ip>
+sudo systemctl status webapp
+sudo journalctl -u webapp -n 100
+
+# Verify Secrets Manager access
+aws secretsmanager get-secret-value --secret-id db-password
+
+# Check target health
+aws elbv2 describe-target-health --target-group-arn <arn>
+
+# Lambda logs
+aws logs tail /aws/lambda/email-verification --follow
+```
+
+---
+
+## Author
+
+**Iris Zou**  
+Northeastern University - CSYE 6225 Cloud Computing  
+Email: zou.yush@northeastern.edu
